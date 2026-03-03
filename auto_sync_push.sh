@@ -7,7 +7,7 @@ DST_REPO="/Users/luxiaoyue/Documents/lxy/report_paper"
 cd "$DST_REPO"
 
 setopt null_glob
-for f in $SRC_DIR/AI应用_concept_cons_sme_逐家AI深度分析_*.xlsx; do
+for f in $SRC_DIR/AI应用_concept_cons_sme_逐家AI深度分析_AI*.xlsx; do
   cp -f "$f" "$DST_REPO/"
 done
 
