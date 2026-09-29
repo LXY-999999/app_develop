@@ -1,0 +1,109 @@
+name: Daily BizRadar
+
+on:
+  schedule:
+    - cron: "17 1 * * *"
+  workflow_dispatch:
+    inputs:
+      sources:
+        description: "Comma-separated data sources"
+        required: false
+        default: "v2ex"
+      max_items:
+        description: "Maximum items per source"
+        required: false
+        default: "10"
+
+concurrency:
+  group: daily-bizradar
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: BizRadar
+    env:
+      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+      LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+      LLM_MODEL: ${{ secrets.LLM_MODEL || 'gpt-5.6-sol' }}
+      NOTIFIER_FEISHU_WEBHOOK: ${{ secrets.NOTIFIER_FEISHU_WEBHOOK }}
+      NOTIFIER_WECOM_WEBHOOK: ${{ secrets.NOTIFIER_WECOM_WEBHOOK }}
+      NOTIFIER_CONSOLE_ENABLED: "true"
+      IDEAHUNTER_SQLITE_PATH: data/ideahunter.db
+      OUTPUT_DIR: output
+      SCORE_APPROVE_MIN: ${{ vars.SCORE_APPROVE_MIN || '65' }}
+      OUTPUT_LANGUAGE: ${{ vars.OUTPUT_LANGUAGE || 'zh' }}
+      SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
+      SOURCES: ${{ inputs.sources || vars.BIZRADAR_SOURCES || 'v2ex' }}
+      MAX_ITEMS: ${{ inputs.max_items || vars.BIZRADAR_MAX_ITEMS || '10' }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: BizRadar/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Validate secrets
+        shell: bash
+        run: |
+          if [[ -z "$LLM_API_KEY" ]]; then
+            echo "Missing repository secret: LLM_API_KEY" >&2
+            exit 1
+          fi
+          if [[ -z "$LLM_BASE_URL" ]]; then
+            echo "Missing repository secret: LLM_BASE_URL" >&2
+            exit 1
+          fi
+          if [[ "$LLM_BASE_URL" =~ ^https?://(127\.0\.0\.1|localhost|\[::1\]) ]]; then
+            echo "LLM_BASE_URL must be reachable from GitHub Actions; localhost points to the runner." >&2
+            exit 1
+          fi
+          if [[ -z "$NOTIFIER_FEISHU_WEBHOOK" && -z "$NOTIFIER_WECOM_WEBHOOK" ]]; then
+            echo "Configure NOTIFIER_FEISHU_WEBHOOK or NOTIFIER_WECOM_WEBHOOK." >&2
+            exit 1
+          fi
+
+      - name: Restore processed-item database
+        uses: actions/cache@v4
+        with:
+          path: BizRadar/data
+          key: bizradar-data-${{ github.run_id }}
+          restore-keys: |
+            bizradar-data-
+
+      - name: Run radar
+        shell: bash
+        run: |
+          mkdir -p data output
+          IFS=',' read -ra source_list <<< "$SOURCES"
+          for raw_source in "${source_list[@]}"; do
+            source="$(echo "$raw_source" | xargs)"
+            if [[ -n "$source" ]]; then
+              python main.py --target "$source" --mode daily_report --max-items "$MAX_ITEMS"
+            fi
+          done
+
+      - name: Upload generated reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bizradar-reports-${{ github.run_number }}
+          path: |
+            BizRadar/output/*.md
+            BizRadar/data/ideahunter.db
+          if-no-files-found: warn
+          retention-days: 30
